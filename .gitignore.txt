@@ -1,0 +1,13 @@
+# Ambiente Virtual
+venv/
+
+# Arquivos temporários do Python
+__pycache__/
+*.pyc
+
+# Pastas de upload e de grafos gerados
+uploads/
+static/graph_*.html
+
+# Arquivos de IDE
+.vscode/
