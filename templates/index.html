@@ -5,97 +5,161 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Analisador de Conexões Genealógicas</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <style>
         body { background-color: #f8f9fa; }
         .card { margin-top: 1.5rem; }
+        .nav-tabs { margin-bottom: 1.5rem; }
         .spinner-border { width: 3rem; height: 3rem; }
-        .graph-container iframe {
-            width: 100%;
-            height: 420px;
+        .graph-container {
             border: 1px solid #dee2e6;
             border-radius: .375rem;
+            padding: 1rem;
+            background-color: #fafafa;
+            overflow-x: auto;
+        }
+        .mermaid {
+            text-align: center;
         }
     </style>
 </head>
 <body>
     <div class="container my-5">
         <div class="row justify-content-center">
-            <div class="col-lg-8">
-                <div class="card shadow-sm">
+            <div class="col-lg-10">
+                <div class="card shadow-sm main-card">
                     <div class="card-body">
                         <h1 class="card-title text-center mb-4">Analisador Genealógico e de DNA</h1>
-                        <p class="text-center text-muted">Carregue sua árvore (GEDCOM) e sua lista de matches (CSV) para visualizar as conexões genealógicas confirmadas por DNA.</p>
-                        
+
                         {% if message %}
-                            <div class="alert alert-{{ 'success' if success else 'danger' }} mt-3">{{ message }}</div>
+                            <div class="alert alert-{{ 'success' if success else 'danger' }} alert-dismissible fade show" role="alert">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                            </div>
                         {% endif %}
 
-                        <form method="POST" enctype="multipart/form-data" id="analysis-form">
-                            <div class="mb-3">
-                                <label for="gedcom" class="form-label"><b>1. Arquivo GEDCOM</b></label>
-                                <input class="form-control" type="file" id="gedcom" name="gedcom" required>
+                        {% if not gedcom_filename %}
+                            <p class="text-center text-muted">Para começar, carregue a sua árvore genealógica em formato GEDCOM.</p>
+                            <form method="POST" enctype="multipart/form-data" id="gedcom-upload-form">
+                                <input type="hidden" name="action" value="upload_gedcom">
+                                <div class="mb-3">
+                                    <label for="gedcom" class="form-label"><b>Arquivo GEDCOM</b></label>
+                                    <input class="form-control" type="file" id="gedcom" name="gedcom" required>
+                                </div>
+                                <div class="d-grid">
+                                    <button type="submit" class="btn btn-primary btn-lg">Carregar e Analisar</button>
+                                </div>
+                            </form>
+                        {% else %}
+                            <ul class="nav nav-tabs" id="analysisTabs" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="path-tab" data-bs-toggle="tab" data-bs-target="#path-panel" type="button" role="tab">Buscar Conexão no GEDCOM</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="dna-tab" data-bs-toggle="tab" data-bs-target="#dna-panel" type="button" role="tab">Analisador de DNA</button>
+                                </li>
+                            </ul>
+
+                            <div class="tab-content" id="analysisTabsContent">
+                                <div class="tab-pane fade show active" id="path-panel" role="tabpanel">
+                                    <p class="text-muted">Escolha duas pessoas do arquivo GEDCOM carregado para encontrar o caminho genealógico entre elas.</p>
+                                    <form method="POST" id="path-form">
+                                        <input type="hidden" name="action" value="path_search">
+                                        <input type="hidden" name="gedcom_filename" value="{{ gedcom_filename }}">
+                                        <div class="mb-3">
+                                            <label for="person1_name" class="form-label"><b>Pessoa 1</b></label>
+                                            <input type="text" class="form-control" id="person1_name" name="person1_name" required list="gedcom_names" placeholder="Comece a digitar um nome...">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="person2_name" class="form-label"><b>Pessoa 2</b></label>
+                                            <input type="text" class="form-control" id="person2_name" name="person2_name" required list="gedcom_names" placeholder="Comece a digitar um nome...">
+                                        </div>
+                                        <div class="d-grid">
+                                            <button type="submit" class="btn btn-info">Encontrar Conexão</button>
+                                        </div>
+                                    </form>
+                                </div>
+
+                                <div class="tab-pane fade" id="dna-panel" role="tabpanel">
+                                    <p class="text-muted">Carregue sua lista de matches (CSV) e insira o seu nome para encontrar as conexões confirmadas por DNA.</p>
+                                    <form method="POST" enctype="multipart/form-data" id="dna-form">
+                                        <input type="hidden" name="action" value="dna_analysis">
+                                        <input type="hidden" name="gedcom_filename" value="{{ gedcom_filename }}">
+                                        <div class="mb-3">
+                                            <label for="matches_csv" class="form-label"><b>1. Lista de Matches (CSV)</b></label>
+                                            <input class="form-control" type="file" id="matches_csv" name="matches_csv" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="root_name" class="form-label"><b>2. Seu Nome (como está no GEDCOM)</b></label>
+                                            <input type="text" class="form-control" id="root_name" name="root_name" placeholder="Ex: João da Silva" required list="gedcom_names">
+                                        </div>
+                                        <div class="d-grid">
+                                            <button type="submit" class="btn btn-success">Analisar Matches de DNA</button>
+                                        </div>
+                                    </form>
+                                </div>
                             </div>
-                            <div class="mb-3">
-                                <label for="matches_csv" class="form-label"><b>2. Lista de Matches (CSV)</b></label>
-                                <input class="form-control" type="file" id="matches_csv" name="matches_csv" required>
-                            </div>
-                            <div class="mb-3">
-                                <label for="root_name" class="form-label"><b>3. Seu Nome (como está no GEDCOM)</b></label>
-                                <input type="text" class="form-control" id="root_name" name="root_name" placeholder="Ex: João da Silva" required>
-                            </div>
-                            <div class="d-grid">
-                                <button type="submit" class="btn btn-primary btn-lg">Analisar Conexões</button>
-                            </div>
-                        </form>
+                            <datalist id="gedcom_names">
+                                {% for name in all_names %}
+                                    <option value="{{ name }}">
+                                {% endfor %}
+                            </datalist>
+                        {% endif %}
 
                         <div id="loading" class="text-center mt-4" style="display: none;">
-                            <div class="spinner-border text-primary" role="status">
-                                <span class="visually-hidden">Analisando...</span>
-                            </div>
+                            <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Analisando...</span></div>
                             <p class="mt-2">Analisando... Isso pode levar alguns segundos.</p>
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
 
-        {% if has_results %}
-        <div class="row justify-content-center">
-            <div class="col-lg-10">
-                <h2 class="text-center mt-5">Resultados Encontrados</h2>
-                {% if results_list %}
-                    {% for result in results_list %}
-                        <div class="card">
-                            <div class="card-header">
-                                <h5>Conexão com: <strong>{{ result.match_name }}</strong></h5>
-                                {% if result.cm %}
-                                    <span class="badge bg-success">{{ result.cm }} cM</span>
-                                {% endif %}
-                            </div>
-                            <div class="card-body">
-                                <p><strong>Caminho Genealógico:</strong> {{ result.text_path }}</p>
-                                
-                                {% if result.relationships %}
-                                <p class="mb-2"><strong>Relacionamento Provável:</strong> <span class="text-primary">{{ result.relationships }}</span></p>
-                                {% endif %}
-                                
-                                <div class="graph-container">
-                                    <iframe src="{{ url_for('static', filename=result.graph_file) }}"></iframe>
+                <div id="results-area">
+                    {% if dna_results %}
+                        <h2 class="text-center mt-5">Resultados da Análise de DNA</h2>
+                        {% for result in dna_results %}
+                            <div class="card">
+                                <div class="card-header"><h5>Conexão com: <strong>{{ result.match_name }}</strong> <span class="badge bg-success">{{ result.cm }} cM</span></h5></div>
+                                <div class="card-body">
+                                    <p><strong>Caminho:</strong> {{ result.text_path }}</p>
+                                    <p class="mb-2"><strong>Relacionamento Provável (DNA):</strong> <span class="text-primary">{{ result.relationships }}</span></p>
+                                    <div class="graph-container"><div class="mermaid">{{ result.mermaid_data | safe }}</div></div>
                                 </div>
                             </div>
+                        {% endfor %}
+                    {% endif %}
+
+                    {% if path_result %}
+                        <h2 class="text-center mt-5">Resultado da Busca de Conexão</h2>
+                        <div class="card">
+                            <div class="card-header"><h5>Conexão entre: <strong>{{ path_result.person1_name }}</strong> e <strong>{{ path_result.person2_name }}</strong></h5></div>
+                            <div class="card-body">
+                                <p><strong>Caminho:</strong> {{ path_result.text_path }}</p>
+                                <div class="graph-container"><div class="mermaid">{{ path_result.mermaid_data | safe }}</div></div>
+                            </div>
                         </div>
-                    {% endfor %}
-                {% else %}
-                    <div class="alert alert-warning mt-3">Nenhum match da sua lista foi encontrado dentro do arquivo GEDCOM fornecido. Verifique os nomes ou ajuste a similaridade.</div>
-                {% endif %}
+                    {% endif %}
+                </div>
             </div>
         </div>
-        {% endif %}
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        document.getElementById('analysis-form').addEventListener('submit', function() {
-            document.getElementById('loading').style.display = 'block';
+        document.addEventListener('DOMContentLoaded', function () {
+            mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+            setTimeout(() => {
+                const mermaidElements = document.querySelectorAll(".mermaid");
+                if (mermaidElements.length) {
+                    mermaid.run({ nodes: mermaidElements });
+                }
+            }, 100);
+        });
+
+        document.querySelectorAll('form').forEach(form => {
+            form.addEventListener('submit', function() {
+                document.getElementById('loading').style.display = 'block';
+                document.getElementById('results-area').style.display = 'none';
+            });
         });
     </script>
 </body>
