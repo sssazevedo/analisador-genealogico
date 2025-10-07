@@ -127,6 +127,39 @@
                             </div>
                         {% endfor %}
                     {% endif %}
+					
+					{% if skipped_matches %}
+					  <h2 class="text-center mt-5">Matches descartados ({{ skipped_matches | length }})</h2>
+
+					  <div class="card">
+						<div class="card-body">
+						  <p class="text-muted">
+							Estes nomes estavam no CSV, mas foram rejeitados pelas regras de validação. O motivo aparece abaixo.
+						  </p>
+
+						  <div class="table-responsive">
+							<table class="table table-sm align-middle">
+							  <thead>
+								<tr>
+								  <th style="width:45%">Nome no CSV</th>
+								  <th>Motivo</th>
+								</tr>
+							  </thead>
+							  <tbody>
+								{% for item in skipped_matches %}
+								  <tr>
+									<td><strong>{{ item.csv_name }}</strong></td>
+									<td>{{ item.motivo }}</td>
+								  </tr>
+								{% endfor %}
+							  </tbody>
+							</table>
+						  </div>
+						 
+						</div>
+					  </div>
+					{% endif %}
+
 
                     {% if path_result %}
                         <h2 class="text-center mt-5">Resultado da Busca de Conexão</h2>
@@ -162,5 +195,6 @@
             });
         });
     </script>
+	
 </body>
 </html>
