@@ -248,6 +248,52 @@ def get_spouses(person_id):
         elif wife == person_id and husb: spouse_ids.append(husb)
     return spouse_ids
 
+def are_spouses(a_id, b_id) -> bool:
+    return b_id in set(get_spouses(a_id))
+
+def split_path_by_marriage(person_path):
+    """Encontra o 1º par de cônjuges adjacentes no caminho indireto."""
+    for i in range(len(person_path) - 1):
+        a, b = person_path[i], person_path[i+1]
+        if are_spouses(a, b):
+            left  = person_path[:i+1]      # ... → A
+            right = person_path[i+1:]      # B → ...
+            return left, right, (a, b)
+    return None, None, None
+
+def pick_spouse_for_couple(person_id, candidate_path=None):
+    """Escolhe um cônjuge para formar o 'casal' no topo do ramo.
+       Se algum cônjuge aparece no path, prioriza; senão, pega o primeiro."""
+    spouses = get_spouses(person_id) or []
+    if candidate_path:
+        seen = set(candidate_path)
+        for s in spouses:
+            if s in seen:
+                return s
+    return spouses[0] if spouses else None
+
+def exclude_tail(seq, n=1):
+    """Retorna seq sem os últimos n elementos (evita duplicar o ancestral na ponta)."""
+    return seq[:-n] if len(seq) > n else []
+
+
+
+def find_indirect_path(start_id, end_id, max_hops=40):
+    """Procura QUALQUER caminho no grafo pessoa↔família (inclui cônjuges/irmãos/descendências).
+       Retorna apenas os nós de pessoa, comprimindo os nós de família."""
+    if graph is None or start_id not in graph or end_id not in graph:
+        return None
+    try:
+        path = nx.shortest_path(graph, source=start_id, target=end_id)  # BFS não ponderado
+        if len(path) - 1 > max_hops:
+            return None
+        # comprime para somente pessoas (remove nós de família)
+        person_path = [n for n in path if n in people]
+        return person_path if len(person_path) >= 2 else None
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return None
+
+
 def find_ancestral_path(start_id, end_id, max_depth=20):
     q1, q2 = deque([(start_id, [start_id])]), deque([(end_id, [end_id])])
     visited1, visited2 = {start_id: [start_id]}, {end_id: [end_id]}
@@ -327,6 +373,183 @@ def generate_mermaid_graph(path, p1_id, p2_id, common_ancestor_id):
     if common_ancestor_id:
         lines.append(f'style {ancestor_id_for_arrows} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
     return "\n".join(lines)
+
+def generate_mermaid_graph_indirect_bridge(p1_id, p2_id, person_path):
+    """
+    Layout 'formato matches' para conexão indireta:
+
+      [ESQ]  Você ↑ ... ↑ (CA1: casal) ↓ ... ↓ Eline  ── ponte horizontal ──  Marido ↑ ... ↑ (CA2: casal) ↓ ... ↓ Tereza  [DIR]
+    """
+    import re
+
+    def sid(raw: str) -> str:
+        if isinstance(raw, (list, tuple, set)):
+            raw = next(iter(raw), "")
+        safe_str = str(raw).replace('@', '').replace('+', '_')
+        return 'N_' + re.sub(r'[^a-zA-Z0-9_]', '', safe_str)
+
+    def lab(txt: str) -> str:
+        s = unicodedata.normalize("NFC", str(txt))
+        s = (s.replace('\u00A0', ' ')
+               .replace('\u2013', '-').replace('\u2014', '-')
+               .replace('“','"').replace('”','"').replace('’', "'"))
+        s = (s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+        s = s.replace('"', "'")
+        s = re.sub(r'[\r\n]+', ' ', s)
+        return s
+
+    def norm_ids(seq):
+        out = []
+        if not seq: return out
+        for x in seq:
+            if isinstance(x, (list, tuple, set)):
+                out.extend([str(y) for y in x])
+            else:
+                out.append(str(x))
+        return out
+
+    # 1) acha o par de cônjuges no caminho indireto (Eline=A, Marido=B)
+    left, right, spouses = split_path_by_marriage(person_path)
+    if not spouses:
+        return generate_mermaid_graph(person_path, p1_id, p2_id, None)
+
+    A, B = map(str, spouses)
+    p1_id, p2_id = str(p1_id), str(p2_id)
+
+    # 2) caminhos DIRETOS para achar os dois ancestrais comuns
+    path_p1_A, ca1 = find_ancestral_path(p1_id, A)    # você .. ca1 .. Eline
+    path_p2_B, ca2 = find_ancestral_path(p2_id, B)    # Tereza .. ca2 .. Marido
+    if not path_p1_A or not path_p2_B:
+        return generate_mermaid_graph(person_path, p1_id, p2_id, None)
+
+    # 2a) escolhe cônjuges para formar o nó de casal no topo (se existir)
+    spouse_ca1 = pick_spouse_for_couple(ca1, candidate_path=path_p1_A)
+    spouse_ca2 = pick_spouse_for_couple(ca2, candidate_path=path_p2_B)
+
+    # 2b) corta os paths no ancestral (não duplica a ponta)
+    def split_at(path, mid):
+        path = norm_ids(path); mid = str(mid)
+        i = path.index(mid)
+        down = path[:i+1]                 # bottom → ... → mid
+        up_rev = list(reversed(path[i:])) # mid → ... → top
+        return down, up_rev
+
+    r1_down, r1_up_from_A = split_at(path_p1_A, ca1)  # você..ca1 ; Eline..ca1 (invertido)
+    r2_down, r2_up_from_B = split_at(path_p2_B, ca2)  # Tereza..ca2 ; Marido..ca2 (invertido)
+
+    # 3) prepara nós de casal (sem criar indivíduos soltos!)
+    couple1_id = couple2_id = None
+    couple1_label = couple2_label = None
+    if spouse_ca1:
+        couple1_id = sid("+".join(sorted([str(ca1), str(spouse_ca1)])))
+        couple1_label = f'{lab(get_name(people.get(ca1)))} &amp; {lab(get_name(people.get(spouse_ca1)))}'
+    if spouse_ca2:
+        couple2_id = sid("+".join(sorted([str(ca2), str(spouse_ca2)])))
+        couple2_label = f'{lab(get_name(people.get(ca2)))} &amp; {lab(get_name(people.get(spouse_ca2)))}'
+
+    # 4) MERMAID
+    # Topo LR garante: ESQ (Ramo 1) → DIR (Ramo 2)
+    # --- MERMAID (VERTICAL COM DUAS COLUNAS LADO-A-LADO) ---
+    lines = ["flowchart BT"]  # volta ao layout vertical
+
+    seen = set()
+
+    def add_node(pid, label=None):
+        pid = str(pid); node = sid(pid)
+        if node not in seen:
+            lines.append(f'{node}["{lab(get_name(people.get(pid))) if label is None else label}"]')
+            seen.add(node)
+        return node
+
+    def add_chain(seq):
+        seq = norm_ids(seq)
+        for i in range(len(seq)):
+            add_node(seq[i])
+            if i < len(seq)-1:
+                lines.append(f'{sid(seq[i])} --> {sid(seq[i+1])}')
+
+    # ========== COLUNAS ==========
+    lines.append("subgraph COLUMNS")     # subgraph só para dispor ESQ e DIR lado-a-lado
+    lines.append("direction BT")         # ← ESQ | DIR →
+
+    # === RAMO 1 (ESQUERDA) ===
+    lines.append("subgraph ESQ[Ramo 1]")
+    lines.append("direction BT")         # coluna vertical
+
+    add_chain(exclude_tail(r1_down, n=1))  # você → ... → (antes do casal/CA1)
+    if couple1_id:
+        lines.append(f'{couple1_id}["{couple1_label}"]')
+        prev = r1_down[-2] if len(r1_down) >= 2 else None
+        if prev: lines.append(f'{sid(prev)} --> {couple1_id}')
+        chain_A = exclude_tail(r1_up_from_A, n=1)         # Eline → ... → (antes de CA1)
+        add_chain(chain_A)
+        if chain_A: lines.append(f'{sid(chain_A[-1])} --> {couple1_id}')
+    else:
+        add_node(ca1)
+        prev = r1_down[-2] if len(r1_down) >= 2 else None
+        if prev: lines.append(f'{sid(prev)} --> {sid(ca1)}')
+        chain_A = exclude_tail(r1_up_from_A, n=1)
+        add_chain(chain_A)
+        if chain_A: lines.append(f'{sid(chain_A[-1])} --> {sid(ca1)}')
+
+    lines.append("end")  # ESQ
+
+    # === RAMO 2 (DIREITA) ===
+    lines.append("subgraph DIR[Ramo 2]")
+    lines.append("direction BT")
+
+    add_chain(exclude_tail(r2_down, n=1))  # Tereza → ... → (antes do casal/CA2)
+    if couple2_id:
+        lines.append(f'{couple2_id}["{couple2_label}"]')
+        prev = r2_down[-2] if len(r2_down) >= 2 else None
+        if prev: lines.append(f'{sid(prev)} --> {couple2_id}')
+        chain_B = exclude_tail(r2_up_from_B, n=1)         # Marido → ... → (antes de CA2)
+        add_chain(chain_B)
+        if chain_B: lines.append(f'{sid(chain_B[-1])} --> {couple2_id}')
+    else:
+        add_node(ca2)
+        prev = r2_down[-2] if len(r2_down) >= 2 else None
+        if prev: lines.append(f'{sid(prev)} --> {sid(ca2)}')
+        chain_B = exclude_tail(r2_up_from_B, n=1)
+        add_chain(chain_B)
+        if chain_B: lines.append(f'{sid(chain_B[-1])} --> {sid(ca2)}')
+
+    lines.append("end")  # DIR
+
+
+    # --- PONTE DE CASAMENTO HORIZONTAL (dentro de COLUMNS/LR) ---
+    A_anchor = sid(f"{A}_anc")
+    B_anchor = sid(f"{B}_anc")
+    lines += [
+        f'{A_anchor}[" "]',
+        f'{B_anchor}[" "]',
+        # invisíveis
+        f'style {A_anchor} fill:transparent,stroke:transparent,stroke-width:0',
+        f'style {B_anchor} fill:transparent,stroke:transparent,stroke-width:0',
+        # cotovelos curtos nas laterais dos retângulos
+        f'{sid(A)} --- {A_anchor}',
+        f'{B_anchor} --- {sid(B)}',
+        # ponte reta entre âncoras (como COLUMNS é LR, sai horizontal)
+        f'{A_anchor} ---|casamento| {B_anchor}',
+    ]
+
+    lines.append("end")  # COLUMNS
+
+    # estilos finais
+    lines.append(f'style {sid(p1_id)} fill:#e8f5e9,stroke:#66bb6a,stroke-width:2px')
+    lines.append(f'style {sid(p2_id)} fill:#ffebee,stroke:#ef5350,stroke-width:2px')
+
+    if couple1_id: lines.append(f'style {couple1_id} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
+    else:          lines.append(f'style {sid(ca1)} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
+
+    if couple2_id: lines.append(f'style {couple2_id} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
+    else:          lines.append(f'style {sid(ca2)} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
+
+    lines.append(f'style {sid(A)} fill:#fff8e1,stroke:#f6a821,stroke-width:2px')
+    lines.append(f'style {sid(B)} fill:#fff8e1,stroke:#f6a821,stroke-width:2px')
+
+    return "\n".join(lines)
+
 
 # --- Rota Principal ---
 @app.route("/", methods=["GET", "POST"])
@@ -611,27 +834,49 @@ def index():
 
         if action == "path_search":
             try:
-                person1_name, person2_name = request.form["person1_name"], request.form["person2_name"]
-                p1_ids, p2_ids = find_person_by_name(person1_name), find_person_by_name(person2_name)
+                person1_name = request.form["person1_name"].strip()
+                person2_name = request.form["person2_name"].strip()
+
+                p1_ids = find_person_by_name(person1_name)
+                p2_ids = find_person_by_name(person2_name)
                 if not p1_ids:
-                    return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names, message=f"Pessoa 1 '{person1_name}' não encontrada.", success=False)
+                    return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names,
+                                           message=f"Pessoa 1 '{person1_name}' não encontrada.", success=False)
                 if not p2_ids:
-                    return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names, message=f"Pessoa 2 '{person2_name}' não encontrada.", success=False)
+                    return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names,
+                                           message=f"Pessoa 2 '{person2_name}' não encontrada.", success=False)
+
+                # PEGUE APENAS UM ID (string)
                 p1_id, p2_id = p1_ids[0], p2_ids[0]
+
+                # 1) tenta conexão DIRETA (ancestral comum)
                 path, common_ancestor = find_ancestral_path(p1_id, p2_id)
-                if not path:
-                    return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names, message=f"Nenhuma conexão encontrada entre '{person1_name}' e '{person2_name}'.", success=True)
-                nomes = [get_name(people[p_id]) for p_id in path]
-                mermaid_data = generate_mermaid_graph(path, p1_id, p2_id, common_ancestor)
+                if path:
+                    nomes = [get_name(people[n]) for n in path]
+                    mermaid_data = generate_mermaid_graph(path, p1_id, p2_id, common_ancestor)
+                    msg = "Conexão direta encontrada (ancestral comum)."
+                else:
+                    # 2) fallback: conexão INDIRETA (via afinidade)
+                    person_path = find_indirect_path(p1_id, p2_id, max_hops=40)
+                    if not person_path:
+                        return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names,
+                                               message=f"Nenhuma conexão encontrada entre '{person1_name}' e '{person2_name}'.",
+                                               success=True)
+                    nomes = [get_name(people[n]) for n in person_path]
+                    mermaid_data = generate_mermaid_graph_indirect_bridge(p1_id, p2_id, person_path)
+                    msg = "Conexão indireta encontrada (via casamento/afinidade)."
+
                 path_result = {
-                    'person1_name': person1_name,
-                    'person2_name': person2_name,
-                    'text_path': " → ".join(nomes),
-                    'mermaid_data': mermaid_data
+                    "person1_name": person1_name,
+                    "person2_name": person2_name,
+                    "text_path": " → ".join(nomes),
+                    "mermaid_data": mermaid_data,
                 }
-                return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names, path_result=path_result, message="Conexão encontrada!", success=True)
+                return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names,
+                                       path_result=path_result, message=msg, success=True)
             except Exception as e:
-                return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names, message=f"Ocorreu um erro: {e}", success=False)
+                return render_template("index.html", gedcom_filename=gedcom_filename, all_names=all_names,
+                                       message=f"Ocorreu um erro: {e}", success=False)
 
     return render_template("index.html")
 
