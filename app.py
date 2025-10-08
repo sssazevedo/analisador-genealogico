@@ -375,11 +375,6 @@ def generate_mermaid_graph(path, p1_id, p2_id, common_ancestor_id):
     return "\n".join(lines)
 
 def generate_mermaid_graph_indirect_bridge(p1_id, p2_id, person_path):
-    """
-    Layout 'formato matches' para conexão indireta:
-
-      [ESQ]  Você ↑ ... ↑ (CA1: casal) ↓ ... ↓ Eline  ── ponte horizontal ──  Marido ↑ ... ↑ (CA2: casal) ↓ ... ↓ Tereza  [DIR]
-    """
     import re
 
     def sid(raw: str) -> str:
@@ -408,7 +403,6 @@ def generate_mermaid_graph_indirect_bridge(p1_id, p2_id, person_path):
                 out.append(str(x))
         return out
 
-    # 1) acha o par de cônjuges no caminho indireto (Eline=A, Marido=B)
     left, right, spouses = split_path_by_marriage(person_path)
     if not spouses:
         return generate_mermaid_graph(person_path, p1_id, p2_id, None)
@@ -416,44 +410,31 @@ def generate_mermaid_graph_indirect_bridge(p1_id, p2_id, person_path):
     A, B = map(str, spouses)
     p1_id, p2_id = str(p1_id), str(p2_id)
 
-    # 2) caminhos DIRETOS para achar os dois ancestrais comuns
-    path_p1_A, ca1 = find_ancestral_path(p1_id, A)    # você .. ca1 .. Eline
-    path_p2_B, ca2 = find_ancestral_path(p2_id, B)    # Tereza .. ca2 .. Marido
-    if not path_p1_A or not path_p2_B:
+    # --- CORREÇÃO IMPORTANTE: Detecta se a ligação é direta ao cônjuge ---
+    is_direct_connection_to_p2 = (p2_id == B)
+
+    # --- Lógica do Ramo 1 (ESQ) ---
+    path_p1_A, ca1 = find_ancestral_path(p1_id, A)
+    if not path_p1_A:
         return generate_mermaid_graph(person_path, p1_id, p2_id, None)
-
-    # 2a) escolhe cônjuges para formar o nó de casal no topo (se existir)
+    
     spouse_ca1 = pick_spouse_for_couple(ca1, candidate_path=path_p1_A)
-    spouse_ca2 = pick_spouse_for_couple(ca2, candidate_path=path_p2_B)
-
-    # 2b) corta os paths no ancestral (não duplica a ponta)
+    
     def split_at(path, mid):
         path = norm_ids(path); mid = str(mid)
         i = path.index(mid)
-        down = path[:i+1]                 # bottom → ... → mid
-        up_rev = list(reversed(path[i:])) # mid → ... → top
+        down = path[:i+1]
+        up_rev = list(reversed(path[i:]))
         return down, up_rev
 
-    r1_down, r1_up_from_A = split_at(path_p1_A, ca1)  # você..ca1 ; Eline..ca1 (invertido)
-    r2_down, r2_up_from_B = split_at(path_p2_B, ca2)  # Tereza..ca2 ; Marido..ca2 (invertido)
+    r1_down, r1_up_from_A = split_at(path_p1_A, ca1)
 
-    # 3) prepara nós de casal (sem criar indivíduos soltos!)
-    couple1_id = couple2_id = None
-    couple1_label = couple2_label = None
+    couple1_id = None
     if spouse_ca1:
         couple1_id = sid("+".join(sorted([str(ca1), str(spouse_ca1)])))
         couple1_label = f'{lab(get_name(people.get(ca1)))} &amp; {lab(get_name(people.get(spouse_ca1)))}'
-    if spouse_ca2:
-        couple2_id = sid("+".join(sorted([str(ca2), str(spouse_ca2)])))
-        couple2_label = f'{lab(get_name(people.get(ca2)))} &amp; {lab(get_name(people.get(spouse_ca2)))}'
-
-    # 4) MERMAID
-    # Topo LR garante: ESQ (Ramo 1) → DIR (Ramo 2)
-    # --- MERMAID (VERTICAL COM DUAS COLUNAS LADO-A-LADO) ---
-    lines = ["flowchart BT"]  # volta ao layout vertical
-
-    seen = set()
-
+    
+    lines = ["flowchart BT"]; seen = set()
     def add_node(pid, label=None):
         pid = str(pid); node = sid(pid)
         if node not in seen:
@@ -468,87 +449,109 @@ def generate_mermaid_graph_indirect_bridge(p1_id, p2_id, person_path):
             if i < len(seq)-1:
                 lines.append(f'{sid(seq[i])} --> {sid(seq[i+1])}')
 
-    # ========== COLUNAS ==========
-    lines.append("subgraph COLUMNS")     # subgraph só para dispor ESQ e DIR lado-a-lado
-    lines.append("direction BT")         # ← ESQ | DIR →
+    lines.append("subgraph COLUMNS"); lines.append("direction BT")
+    lines.append("subgraph ESQ[Ramo 1]"); lines.append("direction BT")
+    lines.append("subgraph ESQ_COLS"); lines.append("direction BT")
 
-    # === RAMO 1 (ESQUERDA) ===
-    lines.append("subgraph ESQ[Ramo 1]")
-    lines.append("direction BT")         # coluna vertical
+    left_col_r1  = exclude_tail(r1_down, n=1)
+    right_col_r1 = exclude_tail(r1_up_from_A, n=1)
 
-    add_chain(exclude_tail(r1_down, n=1))  # você → ... → (antes do casal/CA1)
+    if left_col_r1:
+        lines.append("subgraph ESQ_L[ ]"); lines.append("direction BT")
+        add_chain(left_col_r1)
+        lines.append("end")
+
+    if right_col_r1:
+        lines.append("subgraph ESQ_R[ ]"); lines.append("direction BT")
+        add_chain(right_col_r1)
+        lines.append("end")
+
+    lines.append("end") # ESQ_COLS
+    
     if couple1_id:
         lines.append(f'{couple1_id}["{couple1_label}"]')
-        prev = r1_down[-2] if len(r1_down) >= 2 else None
-        if prev: lines.append(f'{sid(prev)} --> {couple1_id}')
-        chain_A = exclude_tail(r1_up_from_A, n=1)         # Eline → ... → (antes de CA1)
-        add_chain(chain_A)
-        if chain_A: lines.append(f'{sid(chain_A[-1])} --> {couple1_id}')
+        if left_col_r1: lines.append(f'{sid(left_col_r1[-1])} --> {couple1_id}')
+        if right_col_r1: lines.append(f'{sid(right_col_r1[-1])} --> {couple1_id}')
     else:
         add_node(ca1)
-        prev = r1_down[-2] if len(r1_down) >= 2 else None
-        if prev: lines.append(f'{sid(prev)} --> {sid(ca1)}')
-        chain_A = exclude_tail(r1_up_from_A, n=1)
-        add_chain(chain_A)
-        if chain_A: lines.append(f'{sid(chain_A[-1])} --> {sid(ca1)}')
+        if left_col_r1: lines.append(f'{sid(left_col_r1[-1])} --> {sid(ca1)}')
+        if right_col_r1: lines.append(f'{sid(right_col_r1[-1])} --> {sid(ca1)}')
 
-    lines.append("end")  # ESQ
+    lines.append("end") # ESQ
 
-    # === RAMO 2 (DIREITA) ===
-    lines.append("subgraph DIR[Ramo 2]")
-    lines.append("direction BT")
-
-    add_chain(exclude_tail(r2_down, n=1))  # Tereza → ... → (antes do casal/CA2)
-    if couple2_id:
-        lines.append(f'{couple2_id}["{couple2_label}"]')
-        prev = r2_down[-2] if len(r2_down) >= 2 else None
-        if prev: lines.append(f'{sid(prev)} --> {couple2_id}')
-        chain_B = exclude_tail(r2_up_from_B, n=1)         # Marido → ... → (antes de CA2)
-        add_chain(chain_B)
-        if chain_B: lines.append(f'{sid(chain_B[-1])} --> {couple2_id}')
+    # --- CORREÇÃO IMPORTANTE: Lógica condicional para o Ramo 2 ---
+    if is_direct_connection_to_p2:
+        lines.append("subgraph DIR[Ramo 2]")
+        lines.append("direction BT")
+        add_node(p2_id)
+        lines.append("end")
+        right_col_r2 = [] 
+        couple2_id, ca2 = None, None # Zera variáveis não usadas
     else:
-        add_node(ca2)
-        prev = r2_down[-2] if len(r2_down) >= 2 else None
-        if prev: lines.append(f'{sid(prev)} --> {sid(ca2)}')
-        chain_B = exclude_tail(r2_up_from_B, n=1)
-        add_chain(chain_B)
-        if chain_B: lines.append(f'{sid(chain_B[-1])} --> {sid(ca2)}')
+        path_p2_B, ca2 = find_ancestral_path(p2_id, B)
+        if not path_p2_B:
+            return generate_mermaid_graph(person_path, p1_id, p2_id, None)
 
-    lines.append("end")  # DIR
+        spouse_ca2 = pick_spouse_for_couple(ca2, candidate_path=path_p2_B)
+        r2_down, r2_up_from_B = split_at(path_p2_B, ca2)
 
+        couple2_id = None
+        if spouse_ca2:
+            couple2_id = sid("+".join(sorted([str(ca2), str(spouse_ca2)])))
+            couple2_label = f'{lab(get_name(people.get(ca2)))} &amp; {lab(get_name(people.get(spouse_ca2)))}'
+        
+        lines.append("subgraph DIR[Ramo 2]"); lines.append("direction BT")
+        lines.append("subgraph DIR_COLS"); lines.append("direction BT")
 
-    # --- PONTE DE CASAMENTO HORIZONTAL (dentro de COLUMNS/LR) ---
-    A_anchor = sid(f"{A}_anc")
-    B_anchor = sid(f"{B}_anc")
-    lines += [
-        f'{A_anchor}[" "]',
-        f'{B_anchor}[" "]',
-        # invisíveis
-        f'style {A_anchor} fill:transparent,stroke:transparent,stroke-width:0',
-        f'style {B_anchor} fill:transparent,stroke:transparent,stroke-width:0',
-        # cotovelos curtos nas laterais dos retângulos
-        f'{sid(A)} --- {A_anchor}',
-        f'{B_anchor} --- {sid(B)}',
-        # ponte reta entre âncoras (como COLUMNS é LR, sai horizontal)
-        f'{A_anchor} ---|casamento| {B_anchor}',
-    ]
+        left_col_r2  = exclude_tail(r2_up_from_B, n=1)
+        right_col_r2 = exclude_tail(r2_down, n=1)
 
-    lines.append("end")  # COLUMNS
+        if left_col_r2:
+            lines.append("subgraph DIR_L[ ]"); lines.append("direction BT")
+            add_chain(left_col_r2)
+            lines.append("end")
 
-    # estilos finais
-    lines.append(f'style {sid(p1_id)} fill:#e8f5e9,stroke:#66bb6a,stroke-width:2px')
-    lines.append(f'style {sid(p2_id)} fill:#ffebee,stroke:#ef5350,stroke-width:2px')
+        if right_col_r2:
+            lines.append("subgraph DIR_R[ ]"); lines.append("direction BT")
+            add_chain(right_col_r2)
+            lines.append("end")
+
+        lines.append("end") # DIR_COLS
+
+        if couple2_id:
+            lines.append(f'{couple2_id}["{couple2_label}"]')
+            if left_col_r2: lines.append(f'{sid(left_col_r2[-1])} --> {couple2_id}')
+            if right_col_r2: lines.append(f'{sid(right_col_r2[-1])} --> {couple2_id}')
+        else:
+            add_node(ca2)
+            if left_col_r2: lines.append(f'{sid(left_col_r2[-1])} --> {sid(ca2)}')
+            if right_col_r2: lines.append(f'{sid(right_col_r2[-1])} --> {sid(ca2)}')
+
+        lines.append("end") # DIR
+
+    # --- Ponte de Casamento e Estilos ---
+    A_anchor = sid(f"{A}_anc"); B_anchor = sid(f"{B}_anc")
+    lines += [f'{A_anchor}[" "]', f'{B_anchor}[" "]', f'style {A_anchor} fill:transparent,stroke:transparent,stroke-width:0', f'style {B_anchor} fill:transparent,stroke:transparent,stroke-width:0', f'{sid(A)} --- {A_anchor}', f'{B_anchor} --- {sid(B)}', f'{A_anchor} --- |Casamento| {B_anchor}']
+    lines.append("end") # COLUMNS
+
+    # --- CORREÇÃO IMPORTANTE: Lógica de estilo ajustada ---
+    if left_col_r1:
+        lines.append(f'style {sid(p1_id)} fill:#e8f5e9,stroke:#66bb6a,stroke-width:2px')
+    
+    if is_direct_connection_to_p2 or right_col_r2:
+        lines.append(f'style {sid(p2_id)} fill:#ffebee,stroke:#ef5350,stroke-width:2px')
 
     if couple1_id: lines.append(f'style {couple1_id} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
-    else:          lines.append(f'style {sid(ca1)} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
+    elif ca1:      lines.append(f'style {sid(ca1)} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
 
     if couple2_id: lines.append(f'style {couple2_id} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
-    else:          lines.append(f'style {sid(ca2)} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
+    elif ca2:      lines.append(f'style {sid(ca2)} fill:#fff9c4,stroke:#fbc02d,stroke-width:2px')
 
     lines.append(f'style {sid(A)} fill:#fff8e1,stroke:#f6a821,stroke-width:2px')
     lines.append(f'style {sid(B)} fill:#fff8e1,stroke:#f6a821,stroke-width:2px')
 
     return "\n".join(lines)
+
 
 
 # --- Rota Principal ---
